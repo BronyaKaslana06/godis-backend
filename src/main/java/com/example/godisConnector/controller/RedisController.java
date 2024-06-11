@@ -1,6 +1,7 @@
 package com.example.godisConnector.controller;
 
 import com.example.godisConnector.common.BaseResponse;
+import com.example.godisConnector.common.ErrorCode;
 import com.example.godisConnector.dto.CommandDTO;
 import com.example.godisConnector.dto.ServerDTO;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -24,16 +25,14 @@ public class RedisController {
 
     @PostMapping("/execute")
     public BaseResponse<Object> executeCommand(@RequestBody CommandDTO commandDto) {
+        List<String> parts = splitCommand(commandDto.getCommand());
+        System.out.println(parts);
+        String commandName = parts.get(0).toUpperCase();
+        String[] args = parts.subList(1, parts.size()).toArray(new String[0]);
+
         try {
-            List<String> parts = splitCommand(commandDto.getCommand());
-            System.out.println(parts);
-
-            String commandName = parts.get(0).toUpperCase();
-            String[] args = parts.subList(1, parts.size()).toArray(new String[0]);
-
             // 检查并发送命令，包括自定义命令
             Protocol.Command cmd = null;
-//            boolean isCommandSupported = true;
 
             try {
                 cmd = Protocol.Command.valueOf(commandName); // 尝试找到内置命令
@@ -50,11 +49,25 @@ public class RedisController {
 
             Object result = handleReply(commandName, cmd);
 
+            // 特殊错误处理
+            if (result.toString().equals("Error handling response for command: ERR command unknown")) {
+                return new BaseResponse<>(ErrorCode.COMMAND_UNKNOWN.getCode(), "Error executing command: " + commandName, result.toString());
+            }
+            else if (result.toString().equals("Error executing command: ERR not enough args")) {
+                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName, result.toString());
+            }
+            else if (result.toString().equals("(Err) Only one parameter is allowed.")) {
+                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName, result.toString());
+            }
+
             // 返回成功响应
-            return new BaseResponse<>(200, result, "Success");
+            return new BaseResponse<>(ErrorCode.SUCCESS.getCode(), result, ErrorCode.SUCCESS.getMessage());
         } catch (Exception e) {
-            // 返回错误响应
-            return new BaseResponse<>(500, "Error executing command: " + e.getMessage());
+            if (e.getMessage().equals("ERR not enough args")) {
+                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName, ErrorCode.PARAMS_ERROR.getMessage());
+            }
+            // 返回未知错误响应
+            return new BaseResponse<>(ErrorCode.UNKNOWN_ERR.getCode(), "Error executing command: " + e.getMessage(), ErrorCode.UNKNOWN_ERR.getMessage());
         }
     }
 
