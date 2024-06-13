@@ -47,7 +47,8 @@
         <dependency>
             <groupId>redis.clients</groupId>
             <artifactId>jedis</artifactId>
-            <version>4.2.3</version>
+<!--            <version>4.2.3</version>-->
+            <version>5.0.0</version>
         </dependency>
 
         <!-- redis -->

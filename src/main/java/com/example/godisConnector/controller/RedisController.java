@@ -10,12 +10,16 @@ import org.springframework.web.bind.annotation.RestController;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.Protocol;
 import redis.clients.jedis.commands.ProtocolCommand;
+import redis.clients.jedis.util.SafeEncoder;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @RestController
 public class RedisController {
@@ -48,6 +52,10 @@ public class RedisController {
             }
 
             Object result = handleReply(commandName, cmd);
+
+            if(result == null) {
+                return new BaseResponse<>(ErrorCode.GET_NIL.getCode(), "nil", ErrorCode.GET_NIL.getMessage());
+            }
 
             // 特殊错误处理
             if (result.toString().equals("Error handling response for command: ERR command unknown")) {
@@ -105,6 +113,18 @@ public class RedisController {
             case "MATCHKEY":
             case "GETALLKEYS":
                 return jedis.getClient().getBulkReply(); // 假设这些命令返回列表
+            case "HELLO":
+                // 处理 HELLO 命令的复杂返回结构
+                List<Object> response = jedis.getClient().getObjectMultiBulkReply();
+                Map<String, Object> mapResponse = new LinkedHashMap<>();
+                for (int i = 0; i < response.size(); i += 2) {
+                    String key = SafeEncoder.encode((byte[]) response.get(i));
+                    Object value = response.get(i + 1) instanceof byte[]
+                            ? SafeEncoder.encode((byte[]) response.get(i + 1))
+                            : response.get(i + 1);
+                    mapResponse.put(key, value);
+                }
+                return mapResponse;
             default:
                 try {
                     return jedis.getClient().getBulkReply(); // 默认尝试返回字符串

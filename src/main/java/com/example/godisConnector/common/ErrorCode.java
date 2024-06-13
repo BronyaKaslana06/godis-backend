@@ -5,7 +5,9 @@ public enum ErrorCode {
     SUCCESS(200, "Success"),
     PARAMS_ERROR(40000, "请求参数错误"),
     COMMAND_UNKNOWN(40100, "未知命令"),
-    UNKNOWN_ERR(40101, "未知错误");
+
+    GET_NIL(40101, "未知命令"),
+    UNKNOWN_ERR(40102, "未知错误");
 
     /**
      * 状态码
