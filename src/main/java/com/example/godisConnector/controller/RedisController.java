@@ -4,6 +4,7 @@ import com.example.godisConnector.common.BaseResponse;
 import com.example.godisConnector.common.ErrorCode;
 import com.example.godisConnector.dto.CommandDTO;
 import com.example.godisConnector.dto.ServerDTO;
+import io.swagger.models.auth.In;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -12,11 +13,9 @@ import redis.clients.jedis.Protocol;
 import redis.clients.jedis.commands.ProtocolCommand;
 import redis.clients.jedis.util.SafeEncoder;
 
+import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -100,31 +99,55 @@ public class RedisController {
     }
 
 
-    private Object handleReply(String commandName, Protocol.Command cmd) {
+    private Object handleReply(String commandName, Protocol.Command cmd) throws UnsupportedEncodingException {
         switch (commandName) {
+            case "ZADD":
+//                return jedis.getClient().getIntegerReply();
             case "LPUSH":
             case "RPUSH":
+            case "ZCARD":
+            case "ZCOUNT":
                 return jedis.getClient().getIntegerReply(); // 返回列表的新长度
             case "LPOP":
             case "RPOP":
                 return jedis.getClient().getBulkReply(); // 返回元素的值
+            case "ZRANGE":
+                List<Object> response = jedis.getClient().getObjectMultiBulkReply();
+                Map<String, Double> resultMap = new HashMap<>();
+                String key = null;
+                for (Object item : response) {
+                    if (item instanceof byte[]) {
+                        // 将字节数组转换为字符串
+//                        System.out.println(new String((byte[]) item, "UTF-8"));
+                        key = new String((byte[]) item, "UTF-8");
+                    } else {
+                        // 直接打印数字
+//                        System.out.println(item);
+                        if (key != null) {
+                            resultMap.put(key, (Double) item);
+                            key = null; // 重置键，以防不是成对出现
+                        }
+                    }
+                }
+                return resultMap;
+            case "ZINCRBY":
+                Object res = jedis.getClient().getOne();
+//                System.out.println(res.toString());
+                return (Double) res;
+            case "SISMEMBER":
+            case "SADD":
+            case "ZREM":
+            case "SCARD":
+            case "SREM":
+                Object remRes = jedis.getClient().getOne();
+                System.out.println(remRes.toString());
+                return remRes;
+            case "SMEMBERS":
             case "LRANGE":
                 return jedis.getClient().getMultiBulkReply(); // 返回元素列表
             case "MATCHKEY":
             case "GETALLKEYS":
                 return jedis.getClient().getBulkReply(); // 假设这些命令返回列表
-            case "HELLO":
-                // 处理 HELLO 命令的复杂返回结构
-                List<Object> response = jedis.getClient().getObjectMultiBulkReply();
-                Map<String, Object> mapResponse = new LinkedHashMap<>();
-                for (int i = 0; i < response.size(); i += 2) {
-                    String key = SafeEncoder.encode((byte[]) response.get(i));
-                    Object value = response.get(i + 1) instanceof byte[]
-                            ? SafeEncoder.encode((byte[]) response.get(i + 1))
-                            : response.get(i + 1);
-                    mapResponse.put(key, value);
-                }
-                return mapResponse;
             default:
                 try {
                     return jedis.getClient().getBulkReply(); // 默认尝试返回字符串
