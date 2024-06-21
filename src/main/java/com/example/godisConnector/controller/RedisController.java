@@ -7,6 +7,8 @@ import com.example.godisConnector.dto.ServerDTO;
 import com.example.godisConnector.dto.StressTestDTO;
 
 import io.swagger.models.auth.In;
+
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -107,65 +109,85 @@ public class RedisController {
         }
     }
 
-    @PostMapping("/stressTest")
-    public BaseResponse<String> stressTest(@RequestBody StressTestDTO stressTestDto) {
-        int maxConnections = stressTestDto.getMaxConnections();
-        int incrementStep = stressTestDto.getIncrementStep();
-        String command = stressTestDto.getCommand();
-        long testDurationSeconds = stressTestDto.getTestDurationSeconds();
+    private final AtomicInteger currentConnections = new AtomicInteger(0);
+    private final AtomicInteger successfulCommands = new AtomicInteger(0);
+    private final AtomicInteger failedCommands = new AtomicInteger(0);
+    private volatile boolean isTestRunning = false;
+    private ExecutorService executor;
 
-        AtomicInteger successfulCommands = new AtomicInteger(0);
-        AtomicInteger failedCommands = new AtomicInteger(0);
-
-        for (int connections = incrementStep; connections <= maxConnections; connections += incrementStep) {
-            ExecutorService executor = Executors.newFixedThreadPool(connections);
-            long startTime = System.currentTimeMillis();
-
-            for (int i = 0; i < connections; i++) {
-                executor.submit(() -> {
-                    Jedis jedis = new Jedis(stressTestDto.getServerUrl(), stressTestDto.getPort());
-                    try {
-                        while (System.currentTimeMillis() - startTime < testDurationSeconds * 1000) {
-                            try {
-                                jedis.sendCommand(Protocol.Command.valueOf(command.split(" ")[0]), command.split(" "));
-                                successfulCommands.incrementAndGet();
-                            } catch (Exception e) {
-                                failedCommands.incrementAndGet();
-                            }
-                        }
-                    } finally {
-                        jedis.close();
-                    }
-                });
-            }
-
-            executor.shutdown();
-            try {
-                executor.awaitTermination(testDurationSeconds + 5, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-
-            long endTime = System.currentTimeMillis();
-            double commandsPerSecond = (double) (successfulCommands.get() + failedCommands.get())
-                    / ((endTime - startTime) / 1000.0);
-
-            System.out.printf("Connections: %d, Successful: %d, Failed: %d, Commands/sec: %.2f%n",
-                    connections, successfulCommands.get(), failedCommands.get(), commandsPerSecond);
-
-            // 如果失败率超过10%，就停止测试
-            if (failedCommands.get() > (successfulCommands.get() + failedCommands.get()) * 0.1) {
-                return new BaseResponse<>(200,
-                        String.format("Max sustainable connections: %d", connections - incrementStep),
-                        "Stress test completed");
-            }
-
-            successfulCommands.set(0);
-            failedCommands.set(0);
+    @PostMapping("/startStressTest")
+    public BaseResponse<String> startStressTest() {
+        if (isTestRunning) {
+            return new BaseResponse<>(400, "Test is already running", "Error");
         }
 
-        return new BaseResponse<>(200, String.format("Max tested connections: %d", maxConnections),
-                "Stress test completed");
+        isTestRunning = true;
+        currentConnections.set(0);
+        successfulCommands.set(0);
+        failedCommands.set(0);
+
+        executor = Executors.newCachedThreadPool();
+        executor.submit(this::addConnections);
+
+        return new BaseResponse<>(200, "Stress test started", "Success");
+    }
+
+    @GetMapping("/getTestStatus")
+    public BaseResponse<StressTestDTO> getTestStatus() {
+        if (!isTestRunning) {
+            return new BaseResponse<>(400, null, "No test is running");
+        }
+
+        StressTestDTO status = new StressTestDTO(
+                currentConnections.get(),
+                successfulCommands.get(),
+                failedCommands.get());
+
+        return new BaseResponse<>(200, status, "Success");
+    }
+
+    @PostMapping("/stopStressTest")
+    public BaseResponse<String> stopStressTest() {
+        if (!isTestRunning) {
+            return new BaseResponse<>(400, "No test is running", "Error");
+        }
+
+        isTestRunning = false;
+        executor.shutdownNow();
+
+        return new BaseResponse<>(200, "Stress test stopped", "Success");
+    }
+
+    private void addConnections() {
+        while (isTestRunning) {
+            executor.submit(this::runConnection);
+            currentConnections.incrementAndGet();
+            try {
+                Thread.sleep(1); // 每1ms添加一个新连接
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    private void runConnection() {
+        Jedis jedis = new Jedis("localhost", 6389); // 使用实际的地址和端口
+        try {
+            while (isTestRunning) {
+                try {
+                    jedis.get("test_key");
+                    successfulCommands.incrementAndGet();
+                } catch (Exception e) {
+                    failedCommands.incrementAndGet();
+                }
+                Thread.sleep(500); // 每500ms执行一次GET操作
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            jedis.close();
+        }
     }
 
     private Object handleReply(String commandName, Protocol.Command cmd) throws UnsupportedEncodingException {
