@@ -4,6 +4,8 @@ import com.example.godisConnector.common.BaseResponse;
 import com.example.godisConnector.common.ErrorCode;
 import com.example.godisConnector.dto.CommandDTO;
 import com.example.godisConnector.dto.ServerDTO;
+import com.example.godisConnector.dto.StressTestDTO;
+
 import io.swagger.models.auth.In;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -16,6 +18,10 @@ import redis.clients.jedis.util.SafeEncoder;
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -24,7 +30,7 @@ import java.util.stream.Collectors;
 public class RedisController {
 
     private Jedis jedis = new Jedis("localhost", 6389); // 根据你的 Redis 服务器地址进行调整
-//    private Jedis jedis; // 初始化为空
+    // private Jedis jedis; // 初始化为空
 
     @PostMapping("/execute")
     public BaseResponse<Object> executeCommand(@RequestBody CommandDTO commandDto) {
@@ -52,29 +58,32 @@ public class RedisController {
 
             Object result = handleReply(commandName, cmd);
 
-            if(result == null) {
+            if (result == null) {
                 return new BaseResponse<>(ErrorCode.GET_NIL.getCode(), "nil", ErrorCode.GET_NIL.getMessage());
             }
 
             // 特殊错误处理
             if (result.toString().equals("Error handling response for command: ERR command unknown")) {
-                return new BaseResponse<>(ErrorCode.COMMAND_UNKNOWN.getCode(), "Error executing command: " + commandName, result.toString());
-            }
-            else if (result.toString().equals("Error executing command: ERR not enough args")) {
-                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName, result.toString());
-            }
-            else if (result.toString().equals("(Err) Only one parameter is allowed.")) {
-                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName, result.toString());
+                return new BaseResponse<>(ErrorCode.COMMAND_UNKNOWN.getCode(),
+                        "Error executing command: " + commandName, result.toString());
+            } else if (result.toString().equals("Error executing command: ERR not enough args")) {
+                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName,
+                        result.toString());
+            } else if (result.toString().equals("(Err) Only one parameter is allowed.")) {
+                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName,
+                        result.toString());
             }
 
             // 返回成功响应
             return new BaseResponse<>(ErrorCode.SUCCESS.getCode(), result, ErrorCode.SUCCESS.getMessage());
         } catch (Exception e) {
             if (e.getMessage().equals("ERR not enough args")) {
-                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName, ErrorCode.PARAMS_ERROR.getMessage());
+                return new BaseResponse<>(ErrorCode.PARAMS_ERROR.getCode(), "Error executing command: " + commandName,
+                        ErrorCode.PARAMS_ERROR.getMessage());
             }
             // 返回未知错误响应
-            return new BaseResponse<>(ErrorCode.UNKNOWN_ERR.getCode(), "Error executing command: " + e.getMessage(), ErrorCode.UNKNOWN_ERR.getMessage());
+            return new BaseResponse<>(ErrorCode.UNKNOWN_ERR.getCode(), "Error executing command: " + e.getMessage(),
+                    ErrorCode.UNKNOWN_ERR.getMessage());
         }
     }
 
@@ -98,11 +107,71 @@ public class RedisController {
         }
     }
 
+    @PostMapping("/stressTest")
+    public BaseResponse<String> stressTest(@RequestBody StressTestDTO stressTestDto) {
+        int maxConnections = stressTestDto.getMaxConnections();
+        int incrementStep = stressTestDto.getIncrementStep();
+        String command = stressTestDto.getCommand();
+        long testDurationSeconds = stressTestDto.getTestDurationSeconds();
+
+        AtomicInteger successfulCommands = new AtomicInteger(0);
+        AtomicInteger failedCommands = new AtomicInteger(0);
+
+        for (int connections = incrementStep; connections <= maxConnections; connections += incrementStep) {
+            ExecutorService executor = Executors.newFixedThreadPool(connections);
+            long startTime = System.currentTimeMillis();
+
+            for (int i = 0; i < connections; i++) {
+                executor.submit(() -> {
+                    Jedis jedis = new Jedis(stressTestDto.getServerUrl(), stressTestDto.getPort());
+                    try {
+                        while (System.currentTimeMillis() - startTime < testDurationSeconds * 1000) {
+                            try {
+                                jedis.sendCommand(Protocol.Command.valueOf(command.split(" ")[0]), command.split(" "));
+                                successfulCommands.incrementAndGet();
+                            } catch (Exception e) {
+                                failedCommands.incrementAndGet();
+                            }
+                        }
+                    } finally {
+                        jedis.close();
+                    }
+                });
+            }
+
+            executor.shutdown();
+            try {
+                executor.awaitTermination(testDurationSeconds + 5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            long endTime = System.currentTimeMillis();
+            double commandsPerSecond = (double) (successfulCommands.get() + failedCommands.get())
+                    / ((endTime - startTime) / 1000.0);
+
+            System.out.printf("Connections: %d, Successful: %d, Failed: %d, Commands/sec: %.2f%n",
+                    connections, successfulCommands.get(), failedCommands.get(), commandsPerSecond);
+
+            // 如果失败率超过10%，就停止测试
+            if (failedCommands.get() > (successfulCommands.get() + failedCommands.get()) * 0.1) {
+                return new BaseResponse<>(200,
+                        String.format("Max sustainable connections: %d", connections - incrementStep),
+                        "Stress test completed");
+            }
+
+            successfulCommands.set(0);
+            failedCommands.set(0);
+        }
+
+        return new BaseResponse<>(200, String.format("Max tested connections: %d", maxConnections),
+                "Stress test completed");
+    }
 
     private Object handleReply(String commandName, Protocol.Command cmd) throws UnsupportedEncodingException {
         switch (commandName) {
             case "ZADD":
-//                return jedis.getClient().getIntegerReply();
+                // return jedis.getClient().getIntegerReply();
             case "LPUSH":
             case "RPUSH":
             case "ZCARD":
@@ -118,11 +187,11 @@ public class RedisController {
                 for (Object item : response) {
                     if (item instanceof byte[]) {
                         // 将字节数组转换为字符串
-//                        System.out.println(new String((byte[]) item, "UTF-8"));
+                        // System.out.println(new String((byte[]) item, "UTF-8"));
                         key = new String((byte[]) item, "UTF-8");
                     } else {
                         // 直接打印数字
-//                        System.out.println(item);
+                        // System.out.println(item);
                         if (key != null) {
                             resultMap.put(key, (Double) item);
                             key = null; // 重置键，以防不是成对出现
@@ -132,7 +201,7 @@ public class RedisController {
                 return resultMap;
             case "ZINCRBY":
                 Object res = jedis.getClient().getOne();
-//                System.out.println(res.toString());
+                // System.out.println(res.toString());
                 return (Double) res;
             case "SISMEMBER":
             case "SADD":
